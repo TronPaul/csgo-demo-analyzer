@@ -7,5 +7,5 @@
   :dependencies [[org.clojure/clojure "1.8.0"]
                  [com.google.protobuf/protobuf-java "2.5.0"]
                  [protobuf "0.6.2"]
-                 [clojurewerkz/buffy "1.0.2"]]
+                 [funcool/octet "0.2.0"]]
   :source-paths ["src/main/clojure"])

@@ -1,46 +1,107 @@
 (ns csgo-demo-analyzer.core
   (:require [clojure.java.io :as io]
-            [clojurewerkz.buffy.core :refer :all])
-  (:use [protobuf.core])
-  (:import (clojurewerkz.buffy.types.protocols BuffyType)))
+            [octet.core :as buf]
+            [octet.spec :as spec]
+            [octet.spec.basic :as basic]
+            [octet.buffer :as buffer])
+  (:use [protobuf.core]))
 
-(deftype Int32LEType []
-  BuffyType
-  (size [_] 4)
-  (write [bt buffer idx value]
-    (.setInt buffer idx (Integer/reverseBytes value)))
-  (read [by buffer idx]
-    (Integer/reverseBytes (.getInt buffer idx)))
+(defn read-int32LE [_ pos]
+  (Integer/reverseBytes (buffer/read-int _ pos)))
 
-  (rewind-write [bt buffer value]
-    (.writeInt buffer (Integer/reverseBytes value)))
-  (rewind-read [by buffer]
-    (Integer/reverseBytes (.readInt buffer)))
+(defn write-int32LE [_ pos value]
+  (buffer/write-int _ pos (Integer/reverseBytes value)))
 
-  Object
-  (toString [_]
-    "Int32LEType"))
+(def int32LE
+  (basic/primitive-spec 4 read-int32LE write-int32LE))
 
-(def int32LE-type   (memoize #(Int32LEType.)))
+(defrecord Vector [x y z])
+
+(defn read-many [value-types buff pos]
+  (reduce (fn [coll value-type]
+            (let [prev-readed (first coll)
+                  cur-pos (+ pos (first coll))
+                  [readed ret] (spec/read value-type buff cur-pos)]
+              [(+ prev-readed readed) (conj (second coll) ret)]))
+          [0 []] value-types))
+
+(def vector-spec
+  (reify
+    spec/ISpecSize
+    (size [_]
+      (* 3 (spec/size buf/float)))
+
+    spec/ISpec
+    (read [_ buff pos]
+      (let [[readed vals] (read-many (repeat 3 (buf/float)) buff pos)]
+        [readed (apply ->Vector vals)]))
+
+    (write [_ buff pos vector])))
+
+(defrecord Split [flags
+                  view-origin
+                  view-angle
+                  local-view-angle
+                  resample-view-origin
+                  resample-view-angle
+                  resample-local-view-angle])
+
+(def split-spec
+  (reify
+    spec/ISpecSize
+    (size [_]
+      (+ (spec/size buf/int32) (* 6 (spec/size vector-spec))))
+
+    spec/ISpec
+    (read [_ buff pos]
+      (let [[readed vals] (read-many (cons buf/int32 (repeat 6 vector-spec)) buff pos)]
+        [readed (apply ->Split vals)]))
+    (write [_ buff pos vector])))
 
 (def demo-header
-  (spec :filestamp (string-type 8)
-        :protocol (int32LE-type)
-        :network-protocol (int32LE-type)
-        :server-name (string-type 260)
-        :client-name (string-type 260)
-        :map-name (string-type 260)
-        :game-directory (string-type 260)
-        :playback-time (float-type)
-        :playback-ticks (int32LE-type)
-        :playback-frames (int32LE-type)
-        :signon-length (int32LE-type)))
+  (buf/spec :filestamp  (buf/string 8)
+        :protocol int32LE
+        :network-protocol int32LE
+        :server-name (buf/string 260)
+        :client-name (buf/string 260)
+        :map-name (buf/string 260)
+        :game-directory (buf/string 260)
+        :playback-time buf/float
+        :playback-ticks int32LE
+        :playback-frames int32LE
+        :signon-length int32LE))
+
+(def cmd-header
+  (buf/spec :cmd buf/ubyte
+            :tick int32LE
+            :player_slot buf/ubyte))
+
+(def demo-cmd-info
+  (buf/spec :p1 split-spec
+            :p2 split-spec))
+
+(defn copy-bytes [input-stream buffer]
+  (let [b (byte-array (.limit buffer))]
+    (.read input-stream b)
+    (.put buffer b)))
 
 (defn read-demo-header [input-stream]
-  (let [buf (compose-buffer demo-header)]
-    (.setBytes (buffer buf) 0 input-stream 1072)
-    (decompose buf)))
+  (let [b (buf/allocate (buf/size demo-header))]
+    (copy-bytes input-stream b)
+    (buf/read b demo-header)))
+
+(defn read-cmd-header [input-stream]
+  (let [b (buf/allocate (buf/size cmd-header))]
+    (copy-bytes input-stream b)
+    (buf/read b cmd-header)))
+
+(defn read-demo-cmd-info [input-stream]
+  (let [b (buf/allocate (buf/size demo-cmd-info))]
+    (copy-bytes input-stream b)
+    (buf/read b demo-cmd-info)))
 
 (defn read-demo [fname]
   (with-open [is (io/input-stream fname)]
-    (read-demo-header is)))
+    (read-demo-header is)
+    (read-cmd-header is)
+    (read-demo-cmd-info is)))
