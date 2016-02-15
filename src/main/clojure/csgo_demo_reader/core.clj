@@ -31,7 +31,7 @@
     (let [[b new-bits] (read-ubit-long input-stream cur-bits 8)
           new-result (bit-or result (bit-shift-left (bit-and b 0x7f) (* 7 count)))]
       (if (or (= count 5) (bit-and b 0x80))
-        new-result
+        [new-result new-bits]
         (recur (inc count) new-result new-bits)))))
 
 (defn skip-raw-data [input-stream]
@@ -88,8 +88,8 @@
         (do
           (println rel-pos)
           rel-pos)
-        (let [cmd (read-var-int32 input-stream cur-bits)
-              size (read-var-int32 input-stream cur-bits)]
+        (let [[cmd cur-bits] (read-var-int32 input-stream cur-bits)
+              [size cur-bits] (read-var-int32 input-stream cur-bits)]
           (println cmd)
           (println size)
           (throw (RuntimeException.))
