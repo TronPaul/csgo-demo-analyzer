@@ -72,18 +72,41 @@
         :signon-length int32LE))
 
 (def cmd-header
-  (buf/spec :cmd buf/ubyte
+  (buf/spec :cmd buf/byte
             :tick int32LE
-            :player_slot buf/ubyte))
+            :player_slot buf/byte))
 
 (def demo-cmd-info
   (buf/spec :p1 split-spec
             :p2 split-spec))
 
+(def sequence-info
+  (buf/spec :seq-in int32LE
+            :seq-out int32LE))
+
 (defn copy-bytes [input-stream buffer]
   (let [b (byte-array (.limit buffer))]
     (.read input-stream b)
     (.put buffer b)))
+
+(defn skip-raw-data [input-stream]
+  (let [size-buf (buf/allocate (buf/size int32LE))]
+    (copy-bytes input-stream size-buf)
+    (let [size (long (buf/read size-buf int32LE))]
+      (loop [pos 0]
+        (if (<= size pos)
+          pos
+          (recur (+ pos (.skip input-stream (- size pos)))))))))
+
+(defn read-raw-data [input-stream]
+  (let [size-buf (buf/allocate (buf/size int32LE))]
+    (copy-bytes input-stream size-buf)
+    (let [size (buf/read size-buf int32LE)
+          b (byte-array size)]
+      (loop [pos 0]
+        (if (<= size pos)
+          pos
+          (recur (+ pos (.read input-stream b pos (- size pos)))))))))
 
 (defn read-demo-header [input-stream]
   (let [b (buf/allocate (buf/size demo-header))]
@@ -100,8 +123,41 @@
     (copy-bytes input-stream b)
     (buf/read b demo-cmd-info)))
 
+(defn read-sequence-info [input-stream]
+  (let [b (buf/allocate (buf/size sequence-info))]
+    (copy-bytes input-stream b)
+    (buf/read b sequence-info)))
+
+(defn read-demo-packet [input-stream]
+  (read-raw-data input-stream))
+
+(defn read-data-tables [input-stream]
+  (read-raw-data input-stream))
+
+(defn read-string-tables [input-stream]
+  (read-raw-data input-stream))
+
+(defn handle-demo-packet [input-stream]
+  (read-demo-cmd-info input-stream)
+  (read-sequence-info input-stream)
+  (read-demo-packet input-stream))
+
+(defn read-demo-cmds [input-stream]
+  (let [demo-stop (atom false)]
+    (while (not @demo-stop)
+      (let [cmd-header (read-cmd-header input-stream)]
+        (cond
+          (or (= (:cmd cmd-header) 1) (= (:cmd cmd-header) 2)) (handle-demo-packet input-stream)
+          (= (:cmd cmd-header) 3) nil
+          (= (:cmd cmd-header) 4) (skip-raw-data input-stream)
+          (= (:cmd cmd-header) 5) (throw (UnsupportedOperationException. "usercmd"))
+          (= (:cmd cmd-header) 6) (read-data-tables input-stream)
+          (= (:cmd cmd-header) 7) (swap! demo-stop (fn [_ v] v) true)
+          (= (:cmd cmd-header) 8) (throw (UnsupportedOperationException. "customdata"))
+          (= (:cmd cmd-header) 9) (read-string-tables input-stream)
+          :else (println "unknown"))))))
+
 (defn read-demo [fname]
   (with-open [is (io/input-stream fname)]
     (read-demo-header is)
-    (read-cmd-header is)
-    (read-demo-cmd-info is)))
+    (read-demo-cmds is)))
