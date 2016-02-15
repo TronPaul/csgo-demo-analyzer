@@ -4,7 +4,8 @@
             [octet.spec :as spec]
             [octet.spec.basic :as basic]
             [octet.buffer :as buffer])
-  (:use [protobuf.core]))
+  (:use [protobuf.core])
+  (:import (com.valve NetmessagesPublic)))
 
 (defn read-int32LE [_ pos]
   (Integer/reverseBytes (buffer/read-int _ pos)))
@@ -14,6 +15,35 @@
 
 (def int32LE
   (basic/primitive-spec 4 read-int32LE write-int32LE))
+
+(def bit-mask-table
+  (concat [0]
+          (map #(- (bit-shift-left 1 %) 1) (range 1 31))
+          [0x7fffffff
+           0xffffffff]))
+
+(defn next-word [input-stream]
+  (let [size-buf (buf/allocate (buf/size int32LE))]
+    (.read input-stream (.array size-buf))
+    (buf/read size-buf int32LE)))
+
+(defn read-ubit-long [input-stream cur-bits num-bits]
+  (if (>= (:size cur-bits) num-bits)
+    (let [ret (bit-and (:word cur-bits) (nth bit-mask-table num-bits))
+          new-size (- (:size cur-bits) num-bits)]
+      (if (not (zero? new-size))
+        [ret {:size new-size :word (bit-shift-right (:word cur-bits) num-bits)}]
+        [ret {:size 32 :word (next-word input-stream)}]))))
+
+(defn read-var-int32 [input-stream bits]
+  (loop [count 0
+         result 0
+         cur-bits bits]
+    (let [[b new-bits] (read-ubit-long input-stream cur-bits 8)
+          new-result (bit-or result (bit-shift-left (bit-and b 0x7f) (* 7 count)))]
+      (if (or (= count 5) (bit-and b 0x80))
+        new-result
+        (recur (inc count) new-result new-bits)))))
 
 (defrecord Vector [x y z])
 
@@ -123,8 +153,27 @@
     (.read input-stream (.array b))
     (buf/read b sequence-info)))
 
+(defn read-packet-size [input-stream]
+  (let [size-buf (buf/allocate (buf/size int32LE))]
+    (.read input-stream (.array size-buf))
+    (buf/read size-buf int32LE)))
+
 (defn read-demo-packet [input-stream]
-  (read-raw-data input-stream))
+  (let [packet-size (read-packet-size input-stream)]
+    (println "packet-size: " packet-size)
+    (loop [rel-pos 0
+           cur-bits {:size 32 :word (next-word input-stream)}]
+      (println cur-bits)
+      (if (<= packet-size rel-pos)
+        (do
+          (println rel-pos)
+          rel-pos)
+        (let [cmd (read-var-int32 input-stream cur-bits)
+              size (read-var-int32 input-stream cur-bits)]
+          (println cmd)
+          (println size)
+          (throw (RuntimeException.))
+          (recur 0 0))))))
 
 (defn read-data-tables [input-stream]
   (read-raw-data input-stream))
@@ -135,7 +184,8 @@
 (defn handle-demo-packet [input-stream]
   (read-demo-cmd-info input-stream)
   (read-sequence-info input-stream)
-  (read-demo-packet input-stream))
+  (read-demo-packet input-stream)
+  (throw (RuntimeException.)))
 
 (defn read-demo-cmds [input-stream]
   (let [demo-stop (atom false)]
