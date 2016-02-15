@@ -1,4 +1,4 @@
-(ns csgo-demo-analyzer.core
+(ns csgo-demo-reader.core
   (:require [clojure.java.io :as io]
             [octet.core :as buf]
             [octet.spec :as spec]

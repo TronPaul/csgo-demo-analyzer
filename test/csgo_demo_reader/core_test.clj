@@ -1,6 +1,6 @@
-(ns csgo-demo-analyzer.core-test
+(ns csgo-demo-reader.core-test
   (:require [clojure.test :refer :all]
-            [csgo-demo-analyzer.core :refer :all]))
+            [csgo-demo-reader.core :refer :all]))
 
 (deftest a-test
   (testing "FIXME, I fail."
