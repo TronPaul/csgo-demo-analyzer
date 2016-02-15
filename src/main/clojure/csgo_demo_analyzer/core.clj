@@ -84,14 +84,9 @@
   (buf/spec :seq-in int32LE
             :seq-out int32LE))
 
-(defn copy-bytes [input-stream buffer]
-  (let [b (byte-array (.limit buffer))]
-    (.read input-stream b)
-    (.put buffer b)))
-
 (defn skip-raw-data [input-stream]
   (let [size-buf (buf/allocate (buf/size int32LE))]
-    (copy-bytes input-stream size-buf)
+    (.read input-stream (.array size-buf))
     (let [size (long (buf/read size-buf int32LE))]
       (loop [pos 0]
         (if (<= size pos)
@@ -100,7 +95,7 @@
 
 (defn read-raw-data [input-stream]
   (let [size-buf (buf/allocate (buf/size int32LE))]
-    (copy-bytes input-stream size-buf)
+    (.read input-stream (.array size-buf))
     (let [size (buf/read size-buf int32LE)
           b (byte-array size)]
       (loop [pos 0]
@@ -110,22 +105,22 @@
 
 (defn read-demo-header [input-stream]
   (let [b (buf/allocate (buf/size demo-header))]
-    (copy-bytes input-stream b)
+    (.read input-stream (.array b))
     (buf/read b demo-header)))
 
 (defn read-cmd-header [input-stream]
   (let [b (buf/allocate (buf/size cmd-header))]
-    (copy-bytes input-stream b)
+    (.read input-stream (.array b))
     (buf/read b cmd-header)))
 
 (defn read-demo-cmd-info [input-stream]
   (let [b (buf/allocate (buf/size demo-cmd-info))]
-    (copy-bytes input-stream b)
+    (.read input-stream (.array b))
     (buf/read b demo-cmd-info)))
 
 (defn read-sequence-info [input-stream]
   (let [b (buf/allocate (buf/size sequence-info))]
-    (copy-bytes input-stream b)
+    (.read input-stream (.array b))
     (buf/read b sequence-info)))
 
 (defn read-demo-packet [input-stream]
