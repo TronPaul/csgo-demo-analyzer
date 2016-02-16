@@ -11,10 +11,25 @@
           [0x7fffffff
            0xffffffff]))
 
+(defn safe-skip [input-stream num-bytes]
+  (loop [pos 0]
+    (if (<= num-bytes pos)
+      pos
+      (recur (+ pos (.skip input-stream (- num-bytes pos)))))))
+
 (defn next-word [input-stream]
   (let [size-buf (buf/allocate (buf/size spec/int32LE))]
     (.read input-stream (.array size-buf))
     (buf/read size-buf spec/int32LE)))
+
+(defn seek-bits [input-stream cur-bits num-bits]
+  (if (>= (:size cur-bits) num-bits)
+    [num-bits {:size (- (:size cur-bits) num-bits) :word (bit-shift-right (:word cur-bits) num-bits)}]
+    (let [num-bits-rem (- num-bits (:size cur-bits))
+          num-bytes (int (/ num-bits-rem 8))
+          rem (mod num-bits-rem 8)]
+      (safe-skip input-stream num-bytes)
+      [num-bits {:size (- 32 rem) :word (bit-shift-right (next-word input-stream) rem)}])))
 
 (defn read-ubit-long [input-stream cur-bits num-bits]
   (if (>= (:size cur-bits) num-bits)
@@ -29,19 +44,17 @@
          result 0
          cur-bits bits]
     (let [[b new-bits] (read-ubit-long input-stream cur-bits 8)
-          new-result (bit-or result (bit-shift-left (bit-and b 0x7f) (* 7 count)))]
-      (if (or (= count 5) (bit-and b 0x80))
-        [new-result new-bits]
-        (recur (inc count) new-result new-bits)))))
+          new-result (bit-or result (bit-shift-left (bit-and b 0x7f) (* 7 count)))
+          count (inc count)]
+      (if (or (= count 5) (zero? (bit-and b 0x80)))
+        [(* count 8) new-result new-bits]
+        (recur count new-result new-bits)))))
 
 (defn skip-raw-data [input-stream]
   (let [size-buf (buf/allocate (buf/size spec/int32LE))]
     (.read input-stream (.array size-buf))
     (let [size (long (buf/read size-buf spec/int32LE))]
-      (loop [pos 0]
-        (if (<= size pos)
-          pos
-          (recur (+ pos (.skip input-stream (- size pos)))))))))
+      (safe-skip input-stream size))))
 
 (defn read-raw-data [input-stream]
   (let [size-buf (buf/allocate (buf/size spec/int32LE))]
@@ -78,22 +91,20 @@
     (.read input-stream (.array size-buf))
     (buf/read size-buf spec/int32LE)))
 
+(defn ret-inc-pos [pos v]
+  (apply conj [(+ pos (first v))] (rest v)))
+
 (defn read-demo-packet [input-stream]
   (let [packet-size (read-packet-size input-stream)]
-    (println "packet-size: " packet-size)
     (loop [rel-pos 0
-           cur-bits {:size 32 :word (next-word input-stream)}]
-      (println cur-bits)
-      (if (<= packet-size rel-pos)
-        (do
-          (println rel-pos)
-          rel-pos)
-        (let [[cmd cur-bits] (read-var-int32 input-stream cur-bits)
-              [size cur-bits] (read-var-int32 input-stream cur-bits)]
-          (println cmd)
-          (println size)
-          (throw (RuntimeException.))
-          (recur 0 0))))))
+           cur-bits {:size 32 :word (next-word input-stream)}
+           count 0]
+      (if (<= packet-size (/ rel-pos 8))
+        (/ rel-pos 8)
+        (let [[rel-pos cmd cur-bits] (ret-inc-pos rel-pos (read-var-int32 input-stream cur-bits))
+              [rel-pos size cur-bits] (ret-inc-pos rel-pos (read-var-int32 input-stream cur-bits))]
+          (let [[rel-pos cur-bits] (ret-inc-pos rel-pos (seek-bits input-stream cur-bits (* 8 size)))]
+            (recur rel-pos cur-bits (inc count))))))))
 
 (defn read-data-tables [input-stream]
   (read-raw-data input-stream))
