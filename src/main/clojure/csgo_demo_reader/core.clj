@@ -5,13 +5,13 @@
   (:use [protobuf.core])
   (:import (com.valve NetmessagesPublic)))
 
+(def unknown-msg-count (atom 0))
+
 (def bit-mask-table
   (concat [0]
           (map #(- (bit-shift-left 1 %) 1) (range 1 31))
           [0x7fffffff
            0xffffffff]))
-
-(def unknown-msg-count (atom 0))
 
 (defn safe-skip [input-stream num-bytes]
   (loop [pos 0]
