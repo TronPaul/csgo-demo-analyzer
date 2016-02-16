@@ -30,7 +30,7 @@
           rem (mod num-bits-rem 8)]
       (util/safe-skip input-stream num-bytes)
       (if prep-next-word
-        [num-bits {:size (- 32 rem) :word (bit-shift-right (next-word input-stream) rem)}]
+        [num-bits (second (read-bits (next-bits input-stream) rem))]
         [num-bits nil]))))
 
 (defn read-ubit-long [input-stream cur-bits num-bits]
