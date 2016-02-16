@@ -97,14 +97,13 @@
 (defn read-demo-packet [input-stream]
   (let [packet-size (read-packet-size input-stream)]
     (loop [rel-pos 0
-           cur-bits {:size 32 :word (next-word input-stream)}
-           count 0]
+           cur-bits {:size 32 :word (next-word input-stream)}]
       (if (<= packet-size (/ rel-pos 8))
         (/ rel-pos 8)
         (let [[rel-pos cmd cur-bits] (ret-inc-pos rel-pos (read-var-int32 input-stream cur-bits))
               [rel-pos size cur-bits] (ret-inc-pos rel-pos (read-var-int32 input-stream cur-bits))]
           (let [[rel-pos cur-bits] (ret-inc-pos rel-pos (seek-bits input-stream cur-bits (* 8 size)))]
-            (recur rel-pos cur-bits (inc count))))))))
+            (recur rel-pos cur-bits)))))))
 
 (defn read-data-tables [input-stream]
   (read-raw-data input-stream))
