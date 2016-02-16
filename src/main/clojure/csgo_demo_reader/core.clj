@@ -19,6 +19,12 @@
       pos
       (recur (+ pos (.skip input-stream (- num-bytes pos)))))))
 
+(defn safe-read [input-stream buff]
+  (loop [pos 0]
+    (if (<= (alength buff) pos)
+      pos
+      (recur (+ pos (.read input-stream buff pos (- (alength buff) pos)))))))
+
 (defn next-word [input-stream]
   (let [size-buf (buf/allocate (buf/size spec/int32LE))]
     (.read input-stream (.array size-buf))
@@ -74,10 +80,7 @@
     (.read input-stream (.array size-buf))
     (let [size (buf/read size-buf spec/int32LE)
           b (byte-array size)]
-      (loop [pos 0]
-        (if (<= size pos)
-          pos
-          (recur (+ pos (.read input-stream b pos (- size pos)))))))))
+      (safe-read input-stream b))))
 
 (defn read-demo-header [input-stream]
   (let [b (buf/allocate (buf/size spec/demo-header))]
