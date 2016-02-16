@@ -11,6 +11,8 @@
           [0x7fffffff
            0xffffffff]))
 
+(def unknown-msg-count (atom 0))
+
 (defn safe-skip [input-stream num-bytes]
   (loop [pos 0]
     (if (<= num-bytes pos)
@@ -22,10 +24,17 @@
     (.read input-stream (.array size-buf))
     (buf/read size-buf spec/int32LE)))
 
+(defn next-bits [input-stream]
+  {:size 32 :word (next-word input-stream)})
+
+(defn read-bits [cur-bits num-bits]
+  [(bit-and (:word cur-bits) (nth bit-mask-table num-bits))
+   {:size (- (:size cur-bits) num-bits) :word (bit-shift-right (:word cur-bits) num-bits)}])
+
 (defn seek-bits
   ([input-stream cur-bits num-bits prep-next-word]
    (if (>= (:size cur-bits) num-bits)
-     [num-bits {:size (- (:size cur-bits) num-bits) :word (bit-shift-right (:word cur-bits) num-bits)}]
+     [num-bits (second (read-bits cur-bits num-bits))]
      (let [num-bits-rem (- num-bits (:size cur-bits))
            num-bytes (int (/ num-bits-rem 8))
            rem (mod num-bits-rem 8)]
@@ -34,19 +43,14 @@
          [num-bits {:size (- 32 rem) :word (bit-shift-right (next-word input-stream) rem)}]
          [num-bits {:size nil :word nil}])))))
 
-(defn read-bits [cur-bits num-bits]
-  [(bit-and (:word cur-bits) (nth bit-mask-table num-bits)) (- (:size cur-bits) num-bits)])
-
 (defn read-ubit-long [input-stream cur-bits num-bits]
   (if (>= (:size cur-bits) num-bits)
-    (let [[ret new-size] (read-bits cur-bits num-bits)]
-      (if (not (zero? new-size))
-        [ret {:size new-size :word (bit-shift-right (:word cur-bits) num-bits)}]
-        [ret {:size 32 :word (next-word input-stream)}]))
+    (let [[ret cur-bits] (read-bits cur-bits num-bits)]
+      (if (zero? (:size cur-bits))
+        [ret (next-bits input-stream)]
+        [ret cur-bits]))
     (if (= 0 (:size cur-bits))
-      (let [cur-bits {:size 32 :word (next-word input-stream)}
-            [ret new-size] (read-bits cur-bits num-bits)]
-        [ret {:size new-size :word (bit-shift-right (:word cur-bits) num-bits)}]))))
+      (read-bits (next-bits input-stream) num-bits))))
 
 (defn read-var-int32 [input-stream bits]
   (loop [count 0
@@ -111,6 +115,8 @@
         (/ rel-pos 8)
         (let [[rel-pos cmd cur-bits] (ret-inc-pos rel-pos (read-var-int32 input-stream cur-bits))
               [rel-pos-bits size cur-bits] (ret-inc-pos rel-pos (read-var-int32 input-stream cur-bits))]
+          (if (< 31 cmd)
+            (swap! unknown-msg-count inc))
           (let [[rel-pos cur-bits] (ret-inc-pos rel-pos-bits (seek-bits input-stream cur-bits (* 8 size) (> packet-size (+ (/ rel-pos-bits 8) size))))]
             (recur rel-pos cur-bits)))))))
 
