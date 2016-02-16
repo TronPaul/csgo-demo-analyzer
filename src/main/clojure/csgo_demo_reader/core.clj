@@ -38,16 +38,16 @@
    {:size (- (:size cur-bits) num-bits) :word (bit-shift-right (:word cur-bits) num-bits)}])
 
 (defn seek-bits
-  ([input-stream cur-bits num-bits prep-next-word]
-   (if (>= (:size cur-bits) num-bits)
-     [num-bits (second (read-bits cur-bits num-bits))]
-     (let [num-bits-rem (- num-bits (:size cur-bits))
-           num-bytes (int (/ num-bits-rem 8))
-           rem (mod num-bits-rem 8)]
-       (safe-skip input-stream num-bytes)
-       (if prep-next-word
-         [num-bits {:size (- 32 rem) :word (bit-shift-right (next-word input-stream) rem)}]
-         [num-bits {:size nil :word nil}])))))
+  [input-stream cur-bits num-bits prep-next-word]
+  (if (>= (:size cur-bits) num-bits)
+    [num-bits (second (read-bits cur-bits num-bits))]
+    (let [num-bits-rem (- num-bits (:size cur-bits))
+          num-bytes (int (/ num-bits-rem 8))
+          rem (mod num-bits-rem 8)]
+      (safe-skip input-stream num-bytes)
+      (if prep-next-word
+        [num-bits {:size (- 32 rem) :word (bit-shift-right (next-word input-stream) rem)}]
+        [num-bits {:size nil :word nil}]))))
 
 (defn read-ubit-long [input-stream cur-bits num-bits]
   (if (>= (:size cur-bits) num-bits)
