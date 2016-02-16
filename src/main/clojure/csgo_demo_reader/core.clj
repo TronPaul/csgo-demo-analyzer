@@ -47,7 +47,7 @@
       (safe-skip input-stream num-bytes)
       (if prep-next-word
         [num-bits {:size (- 32 rem) :word (bit-shift-right (next-word input-stream) rem)}]
-        [num-bits {:size nil :word nil}]))))
+        [num-bits nil]))))
 
 (defn read-ubit-long [input-stream cur-bits num-bits]
   (if (>= (:size cur-bits) num-bits)
