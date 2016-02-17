@@ -6,6 +6,7 @@
   :plugins [[lein-protobuf "0.4.0"]]
   :dependencies [[org.clojure/clojure "1.8.0"]
                  [com.google.protobuf/protobuf-java "2.5.0"]
-                 [protobuf "0.6.2"]
+                 [org.flatland/protobuf "0.8.2"]            ;had to download this manually? wtf clojars
                  [funcool/octet "0.2.0"]]
-  :source-paths ["src/main/clojure"])
+  :source-paths ["src/main/clojure"]
+  :java-source-paths ["src/main/java"])
