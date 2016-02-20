@@ -150,19 +150,26 @@
   (read-demo-packet input-stream))
 
 (defn read-demo-cmds [input-stream]
-  (let [demo-stop (atom false)]
-    (while (not @demo-stop)
-      (let [cmd-header (read-cmd-header input-stream)]
-        (cond
-          (or (= (:cmd cmd-header) 1) (= (:cmd cmd-header) 2)) (handle-demo-packet input-stream)
-          (= (:cmd cmd-header) 3) nil
-          (= (:cmd cmd-header) 4) (skip-raw-data input-stream)
-          (= (:cmd cmd-header) 5) (throw (UnsupportedOperationException. "usercmd"))
-          (= (:cmd cmd-header) 6) (read-data-tables input-stream)
-          (= (:cmd cmd-header) 7) (swap! demo-stop (fn [_ v] v) true)
-          (= (:cmd cmd-header) 8) (throw (UnsupportedOperationException. "customdata"))
-          (= (:cmd cmd-header) 9) (read-string-tables input-stream)
-          :else (println "unknown"))))))
+  (loop [data {:packets []}]
+    (let [cmd-header (read-cmd-header input-stream)]
+      (cond
+        (or (= (:cmd cmd-header) 1) (= (:cmd cmd-header) 2)) (recur (update-in data [:packets] #(conj % (handle-demo-packet input-stream))))
+        (= (:cmd cmd-header) 3) (recur data)
+        (= (:cmd cmd-header) 4) (do
+                                  (skip-raw-data input-stream)
+                                  (recur data))
+        (= (:cmd cmd-header) 5) (throw (UnsupportedOperationException. "usercmd"))
+        (= (:cmd cmd-header) 6) (do
+                                  (read-data-tables input-stream)
+                                  (recur data))
+        (= (:cmd cmd-header) 7) data
+        (= (:cmd cmd-header) 8) (throw (UnsupportedOperationException. "customdata"))
+        (= (:cmd cmd-header) 9) (do
+                                  (read-string-tables input-stream)
+                                  (recur data))
+        :else (do
+                (println "unknown")
+                (recur data))))))
 
 (defn read-demo [fname]
   (with-open [is (io/input-stream fname)]
