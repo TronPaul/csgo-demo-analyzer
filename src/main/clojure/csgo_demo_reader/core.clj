@@ -139,10 +139,16 @@
           (recur num-bytes-read))))))
 
 (defn read-data-tables [input-stream]
-  (read-raw-data input-stream))
+  (skip-raw-data input-stream))
 
 (defn read-string-tables [input-stream]
-  (read-raw-data input-stream))
+  (skip-raw-data input-stream))
+
+(defn read-console-cmd [input-stream]
+  (skip-raw-data input-stream))
+
+(defn read-user-cmd [input-stream]
+  (skip-raw-data input-stream))
 
 (defn handle-demo-packet [input-stream packet-cmd-fns]
   (read-demo-cmd-info input-stream)
@@ -158,20 +164,20 @@
                                                                (recur))
         (= (:cmd cmd-header) 3) (recur)
         (= (:cmd cmd-header) 4) (do
-                                  (skip-raw-data input-stream)
+                                  (read-console-cmd input-stream)
                                   (recur))
-        (= (:cmd cmd-header) 5) (throw (UnsupportedOperationException. "usercmd"))
+        (= (:cmd cmd-header) 5) (do
+                                  (read-user-cmd input-stream)
+                                  (recur))
         (= (:cmd cmd-header) 6) (do
                                   (read-data-tables input-stream)
                                   (recur))
         (= (:cmd cmd-header) 7) nil
-        (= (:cmd cmd-header) 8) (throw (UnsupportedOperationException. "customdata"))
+        (= (:cmd cmd-header) 8) (throw (UnsupportedOperationException. "Cannot parse customdata"))
         (= (:cmd cmd-header) 9) (do
                                   (read-string-tables input-stream)
                                   (recur))
-        :else (do
-                (println "unknown")
-                (recur))))))
+        :else (throw (UnsupportedOperationException. (str "Unknown command: " (:cmd cmd-header))))))))
 
 (defn read-demo
   ([fname]
