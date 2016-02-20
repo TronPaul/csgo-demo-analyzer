@@ -2,9 +2,8 @@
   (:require [clojure.java.io :as io]
             [octet.core :as buf]
             [csgo-demo-reader.spec :as spec]
-            [csgo-demo-reader.util :as util]
-            [csgo-demo-reader.bit-buffer :as bb])
-  (:use [protobuf.core])
+            [csgo-demo-reader.util :as util])
+  (:use [flatland.protobuf.core])
   (:import (com.valve NetmessagesPublic)))
 
 (def unknown-msg-count (atom 0))
@@ -52,16 +51,15 @@
 
 (defn read-demo-packet [input-stream]
   (let [packet-size (read-packet-size input-stream)]
-    (loop [rel-pos 0
-           cur-bits (bb/next-bits input-stream)]
-      (if (<= packet-size (/ rel-pos 8))
-        (/ rel-pos 8)
-        (let [[rel-pos cmd cur-bits] (ret-inc-pos rel-pos (bb/read-var-int32 input-stream cur-bits))
-              [rel-pos-bits size cur-bits] (ret-inc-pos rel-pos (bb/read-var-int32 input-stream cur-bits))]
+    (loop [rel-pos 0]
+      (if (<= packet-size rel-pos)
+        rel-pos
+        (let [[rel-pos cmd] (ret-inc-pos rel-pos (spec/read-var-int32 input-stream))
+              [rel-pos size] (ret-inc-pos rel-pos (spec/read-var-int32 input-stream))]
           (if (< 31 cmd)
             (swap! unknown-msg-count inc))
-          (let [[rel-pos cur-bits] (ret-inc-pos rel-pos-bits (bb/seek-bits input-stream cur-bits (* 8 size) (> packet-size (+ (/ rel-pos-bits 8) size))))]
-            (recur rel-pos cur-bits)))))))
+          (let [rel-pos (+ rel-pos (util/safe-skip input-stream size))]
+            (recur rel-pos)))))))
 
 (defn read-data-tables [input-stream]
   (read-raw-data input-stream))

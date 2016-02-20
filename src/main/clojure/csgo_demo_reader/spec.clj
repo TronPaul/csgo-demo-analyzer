@@ -13,6 +13,16 @@
 (def int32LE
   (basic/primitive-spec 4 read-int32LE write-int32LE))
 
+(defn read-var-int32 [input-stream]
+  (loop [count 0
+         result 0]
+    (let [b (.read input-stream)
+          new-result (bit-or result (bit-shift-left (bit-and b 0x7f) (* 7 count)))
+          num-bytes-read (inc count)]
+      (if (or (= num-bytes-read 5) (zero? (bit-and b 0x80)))
+        [num-bytes-read new-result]
+        (recur num-bytes-read new-result)))))
+
 (defn read-many [value-types buff pos]
   (reduce (fn [coll value-type]
             (let [prev-readed (first coll)
