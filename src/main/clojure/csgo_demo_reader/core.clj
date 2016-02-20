@@ -175,9 +175,7 @@
 
 (defn read-demo
   ([fname]
-   (let [packets (atom [])]
-     (read-demo fname {:demo-header println :packet-cmds (reduce #(assoc %1 %2 (fn [packet] (swap! packets conj packet))) {} (keys commands))})
-     (map println @packets)))
+   (read-demo fname {:demo-header println :packet-cmds (reduce #(assoc %1 %2 println) {} (keys commands))}))
   ([fname {demo-header-fn :demo-header packet-cmd-fns :packet-cmds}]
    (with-open [is (io/input-stream fname)]
      (demo-header-fn (read-demo-header is))
