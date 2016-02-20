@@ -11,6 +11,17 @@ Call the `read-demo` method with the demo filename and handler functions for dif
 
 This will print the demo header and every packet in the demo.
 
+There are some default handlers to assist with handling game events (ie weapon_fire). They can be used like so:
+
+    (use 'csgo_demo_reader.core)
+    (let [game-events (atom {})]
+         (read-demo fname {:demo-header println
+                           :packet-cmds {30 (create-game-event-list-handler game-events)
+                                         25 (create-game-event-handler game-events)}
+                           :game-events {"weapon_fire" println}}))
+
+This will print out the demo header and every weapon_fire event.
+
 ## License
 
 Copyright © 2016 Mark McGuire

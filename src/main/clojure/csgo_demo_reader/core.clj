@@ -119,7 +119,7 @@
 (defn ret-inc-pos [pos v]
   (apply conj [(+ pos (first v))] (rest v)))
 
-(defn read-demo-packet [input-stream packet-cmd-fns]
+(defn read-demo-packet [input-stream {packet-cmd-fns :packet-cmds :as handler-fns :or {packet-cmd-fns {}}}]
   (let [packet-size (read-packet-size input-stream)]
     (loop [num-bytes-read 0]
       (if (<= packet-size num-bytes-read)
@@ -127,12 +127,12 @@
         (let [[num-bytes-read cmd] (ret-inc-pos num-bytes-read (spec/read-var-int32 input-stream))
               [num-bytes-read size] (ret-inc-pos num-bytes-read (spec/read-var-int32 input-stream))
               cmd-proto (get commands cmd)
+              cmd-fn (get packet-cmd-fns cmd)
               num-bytes-read (+ num-bytes-read size)]
-          (if cmd-proto
-            (if-let [cmd-fn (get packet-cmd-fns cmd)]
-              (let [b (buf/allocate size)]
-                (.read input-stream (.array b))
-                (cmd-fn (protobuf-load cmd-proto (.array b)))))
+          (if (and cmd-proto cmd-fn)
+            (let [b (buf/allocate size)]
+              (.read input-stream (.array b))
+              (cmd-fn (protobuf-load cmd-proto (.array b)) handler-fns))
             (do
               (swap! unknown-msg-count inc)
               (util/safe-skip input-stream size)))
@@ -150,17 +150,17 @@
 (defn read-user-cmd [input-stream]
   (skip-raw-data input-stream))
 
-(defn handle-demo-packet [input-stream packet-cmd-fns]
+(defn handle-demo-packet [input-stream handler-fns]
   (read-demo-cmd-info input-stream)
   (read-sequence-info input-stream)
-  (read-demo-packet input-stream packet-cmd-fns))
+  (read-demo-packet input-stream handler-fns))
 
-(defn read-demo-cmds [input-stream packet-cmd-fns]
+(defn read-demo-cmds [input-stream handler-fns]
   (loop []
     (let [cmd-header (read-cmd-header input-stream)]
       (cond
         (or (= (:cmd cmd-header) 1) (= (:cmd cmd-header) 2)) (do
-                                                               (handle-demo-packet input-stream packet-cmd-fns)
+                                                               (handle-demo-packet input-stream handler-fns)
                                                                (recur))
         (= (:cmd cmd-header) 3) (recur)
         (= (:cmd cmd-header) 4) (do
@@ -179,10 +179,45 @@
                                   (recur))
         :else (throw (UnsupportedOperationException. (str "Unknown command: " (:cmd cmd-header))))))))
 
+(def event-types
+  {1 :val-string
+   2 :val-float
+   3 :val-long
+   4 :val-short
+   5 :val-byte
+   6 :val-bool
+   7 :val-wstring})
+
+; {eventid {:eventid 0 :name name :keys [{:type 1 :name name} ...]}}
+(defn parse-game-event-list [game-event-list-cmd]
+  (reduce #(assoc %1 (:eventid %2) %2) {} (:descriptors game-event-list-cmd)))
+
+;{:eventid 0 :keys [{:type 1 :val-string "stuff"}...]} -> {:eventid 0 :name name :data {name "stuff" ...}}
+(defn parse-game-event [game-event-cmd game-event-list]
+  (if-let [game-event-info (get game-event-list (:eventid game-event-cmd))]
+    (let [fields (map vector (:keys game-event-info) (:keys game-event-cmd))
+          base-game-event {:eventid (:eventid game-event-cmd) :name (:name game-event-info) :data {}}]
+      (reduce (fn [game-event [{:keys [type name]} val]]
+                (assoc-in game-event [:data name] (get val (get event-types type)))) base-game-event fields))
+    (throw (RuntimeException. "Unknown event " (:eventid game-event-cmd)))))
+
+(defn handle-game-event [game-event-cmd game-event-list {game-event-fns :game-events :or {game-event-fns {}} :as handler-fns}]
+  (let [game-event (parse-game-event game-event-cmd game-event-list)]
+    (if-let [game-event-fn (get game-event-fns (:name game-event))]
+      (game-event-fn game-event))))
+
+(defn create-game-event-list-handler [game-event-list-atom]
+  (fn [game-event-list-cmd handler-fns]
+    (swap! game-event-list-atom merge (parse-game-event-list game-event-list-cmd))))
+
+(defn create-game-event-handler [game-event-list-atom]
+  (fn [game-event-cmd handler-fns]
+    (handle-game-event game-event-cmd @game-event-list-atom handler-fns)))
+
 (defn read-demo
   ([fname]
-   (read-demo fname {:demo-header println :packet-cmds (reduce #(assoc %1 %2 println) {} (keys commands))}))
-  ([fname {demo-header-fn :demo-header packet-cmd-fns :packet-cmds}]
+   (read-demo fname {:demo-header println :packet-cmds (reduce #(assoc %1 %2 (fn [cmd fns] (println cmd))) {} (keys commands))}))
+  ([fname {demo-header-fn :demo-header :as handler-fns}]
    (with-open [is (io/input-stream fname)]
      (demo-header-fn (read-demo-header is))
-     (read-demo-cmds is packet-cmd-fns))))
+     (read-demo-cmds is handler-fns))))
