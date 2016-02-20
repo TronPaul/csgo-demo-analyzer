@@ -119,24 +119,24 @@
 (defn ret-inc-pos [pos v]
   (apply conj [(+ pos (first v))] (rest v)))
 
-(defn read-demo-packet [input-stream]
+(defn read-demo-packet [input-stream packet-cmd-fns]
   (let [packet-size (read-packet-size input-stream)]
-    (loop [num-bytes-read 0
-           acc []]
+    (loop [num-bytes-read 0]
       (if (<= packet-size num-bytes-read)
-        acc
+        num-bytes-read
         (let [[num-bytes-read cmd] (ret-inc-pos num-bytes-read (spec/read-var-int32 input-stream))
               [num-bytes-read size] (ret-inc-pos num-bytes-read (spec/read-var-int32 input-stream))
               cmd-proto (get commands cmd)
               num-bytes-read (+ num-bytes-read size)]
           (if cmd-proto
-            (let [b (buf/allocate size)]
-              (.read input-stream (.array b))
-              (recur num-bytes-read (conj acc (protobuf-load cmd-proto (.array b)))))
+            (if-let [cmd-fn (get packet-cmd-fns cmd)]
+              (let [b (buf/allocate size)]
+                (.read input-stream (.array b))
+                (cmd-fn (protobuf-load cmd-proto (.array b)))))
             (do
               (swap! unknown-msg-count inc)
-              (util/safe-skip input-stream size)
-              (recur num-bytes-read acc))))))))
+              (util/safe-skip input-stream size)))
+          (recur num-bytes-read))))))
 
 (defn read-data-tables [input-stream]
   (read-raw-data input-stream))
@@ -144,34 +144,41 @@
 (defn read-string-tables [input-stream]
   (read-raw-data input-stream))
 
-(defn handle-demo-packet [input-stream]
+(defn handle-demo-packet [input-stream packet-cmd-fns]
   (read-demo-cmd-info input-stream)
   (read-sequence-info input-stream)
-  (read-demo-packet input-stream))
+  (read-demo-packet input-stream packet-cmd-fns))
 
-(defn read-demo-cmds [input-stream]
-  (loop [data {:packets []}]
+(defn read-demo-cmds [input-stream packet-cmd-fns]
+  (loop []
     (let [cmd-header (read-cmd-header input-stream)]
       (cond
-        (or (= (:cmd cmd-header) 1) (= (:cmd cmd-header) 2)) (recur (update-in data [:packets] #(conj % (handle-demo-packet input-stream))))
-        (= (:cmd cmd-header) 3) (recur data)
+        (or (= (:cmd cmd-header) 1) (= (:cmd cmd-header) 2)) (do
+                                                               (handle-demo-packet input-stream packet-cmd-fns)
+                                                               (recur))
+        (= (:cmd cmd-header) 3) (recur)
         (= (:cmd cmd-header) 4) (do
                                   (skip-raw-data input-stream)
-                                  (recur data))
+                                  (recur))
         (= (:cmd cmd-header) 5) (throw (UnsupportedOperationException. "usercmd"))
         (= (:cmd cmd-header) 6) (do
                                   (read-data-tables input-stream)
-                                  (recur data))
-        (= (:cmd cmd-header) 7) data
+                                  (recur))
+        (= (:cmd cmd-header) 7) nil
         (= (:cmd cmd-header) 8) (throw (UnsupportedOperationException. "customdata"))
         (= (:cmd cmd-header) 9) (do
                                   (read-string-tables input-stream)
-                                  (recur data))
+                                  (recur))
         :else (do
                 (println "unknown")
-                (recur data))))))
+                (recur))))))
 
-(defn read-demo [fname]
-  (with-open [is (io/input-stream fname)]
-    (read-demo-header is)
-    (read-demo-cmds is)))
+(defn read-demo
+  ([fname]
+   (let [packets (atom [])]
+     (read-demo fname {:demo-header println :packet-cmds (reduce #(assoc %1 %2 (fn [packet] (swap! packets conj packet))) {} (keys commands))})
+     (map println @packets)))
+  ([fname {demo-header-fn :demo-header packet-cmd-fns :packet-cmds}]
+   (with-open [is (io/input-stream fname)]
+     (demo-header-fn (read-demo-header is))
+     (read-demo-cmds is packet-cmd-fns))))
