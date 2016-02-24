@@ -153,7 +153,7 @@
               [num-bytes-read net-messages])
             (recur num-bytes-read (conj net-messages msg))))))))
 
-(defn read-data-tables [input-stream handler-fns]
+(defn read-data-tables [input-stream demo-data handler-fns]
   (let [data-tables (second (read-data-tables-packets input-stream))
         num-server-classes (spec/read-short input-stream)]
     (loop [classes-read 0
@@ -165,44 +165,38 @@
           (recur (inc classes-read) (conj classes {:class-id class-id
                                                    :name name
                                                    :data-table-name data-table-name})))
-        [data-tables classes]))))
+        (update-in (update-in demo-data [:data-tables] (comp (partial into []) concat) data-tables) [:classes] (comp (partial into []) concat) classes)))))
 
-(defn read-string-tables [input-stream]
-  (skip-raw-data input-stream))
+(defn read-string-tables [input-stream demo-data]
+  (skip-raw-data input-stream)
+  demo-data)
 
-(defn read-console-cmd [input-stream]
-  (skip-raw-data input-stream))
+(defn read-console-cmd [input-stream demo-data]
+  (skip-raw-data input-stream)
+  demo-data)
 
-(defn read-user-cmd [input-stream]
-  (skip-raw-data input-stream))
+(defn read-user-cmd [input-stream demo-data]
+  (skip-raw-data input-stream)
+  demo-data)
 
-(defn handle-demo-packet [input-stream handler-fns]
+(defn handle-demo-packet [input-stream demo-data handler-fns]
   (read-demo-cmd-info input-stream)
   (read-sequence-info input-stream)
-  (read-demo-packet input-stream handler-fns))
+  (read-demo-packet input-stream handler-fns)
+  demo-data)
 
 (defn read-demo-cmds [input-stream handler-fns]
-  (loop []
+  (loop [demo-data {}]
     (let [cmd-header (read-cmd-header input-stream)]
       (cond
-        (or (= (:cmd cmd-header) 1) (= (:cmd cmd-header) 2)) (do
-                                                               (handle-demo-packet input-stream handler-fns)
-                                                               (recur))
-        (= (:cmd cmd-header) 3) (recur)
-        (= (:cmd cmd-header) 4) (do
-                                  (read-console-cmd input-stream)
-                                  (recur))
-        (= (:cmd cmd-header) 5) (do
-                                  (read-user-cmd input-stream)
-                                  (recur))
-        (= (:cmd cmd-header) 6) (do
-                                  (read-data-tables input-stream handler-fns)
-                                  (recur))
+        (or (= (:cmd cmd-header) 1) (= (:cmd cmd-header) 2)) (recur (handle-demo-packet input-stream demo-data handler-fns))
+        (= (:cmd cmd-header) 3) (recur demo-data)
+        (= (:cmd cmd-header) 4) (recur (read-console-cmd input-stream demo-data))
+        (= (:cmd cmd-header) 5) (recur (read-user-cmd input-stream demo-data))
+        (= (:cmd cmd-header) 6) (recur (read-data-tables input-stream demo-data handler-fns))
         (= (:cmd cmd-header) 7) nil
         (= (:cmd cmd-header) 8) (throw (UnsupportedOperationException. "Cannot parse customdata"))
-        (= (:cmd cmd-header) 9) (do
-                                  (read-string-tables input-stream)
-                                  (recur))
+        (= (:cmd cmd-header) 9) (recur (read-string-tables input-stream demo-data))
         :else (throw (UnsupportedOperationException. (str "Unknown command: " (:cmd cmd-header))))))))
 
 (def event-types
