@@ -116,9 +116,6 @@
     (.read input-stream (.array size-buf))
     (buf/read size-buf spec/int32LE)))
 
-(defn ret-inc-pos [pos v]
-  (apply conj [(+ pos (first v))] (rest v)))
-
 (defn read-net-message-header [input-stream]
   (reduce (fn [[bytes-read-acc header] name]
             (let [[bytes-read ret] (spec/read-var-int32 input-stream)]
