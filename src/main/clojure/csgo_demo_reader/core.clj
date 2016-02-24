@@ -138,14 +138,37 @@
 (defn read-demo-packet [input-stream {packet-cmd-fns :packet-cmds :or {packet-cmd-fns {}} :as handler-fns}]
   (let [packet-size (read-packet-size input-stream)]
     (loop [num-bytes-read 0
-           packets []]
+           net-messages []]
       (if (<= packet-size num-bytes-read)
-        num-bytes-read
+        [num-bytes-read net-messages]
         (let [[new-num-bytes-read msg] (read-net-message input-stream)]
-          (recur (+ num-bytes-read new-num-bytes-read) (conj packets msg)))))))
+          (recur (+ num-bytes-read new-num-bytes-read) (conj net-messages msg)))))))
+
+(defn read-data-tables-packets [input-stream]
+  (let [packet-size (read-packet-size input-stream)]
+    (loop [num-bytes-read 0
+           net-messages []]
+      (if (<= packet-size num-bytes-read)
+        [num-bytes-read net-messages]
+        (let [[num-bytes-read msg] (update-in (read-net-message input-stream) [0] + num-bytes-read)]
+          (if (:is-end msg)
+            (do
+              [num-bytes-read net-messages])
+            (recur num-bytes-read (conj net-messages msg))))))))
 
 (defn read-data-tables [input-stream handler-fns]
-  (skip-raw-data input-stream))
+  (let [data-tables (second (read-data-tables-packets input-stream))
+        num-server-classes (spec/read-short input-stream)]
+    (loop [classes-read 0
+           classes []]
+      (if (> num-server-classes classes-read)
+        (let [class-id (spec/read-short input-stream)
+              name (spec/read-string input-stream 256)
+              data-table-name (spec/read-string input-stream 256)]
+          (recur (inc classes-read) (conj classes {:class-id class-id
+                                                   :name name
+                                                   :data-table-name data-table-name})))
+        [data-tables classes]))))
 
 (defn read-string-tables [input-stream]
   (skip-raw-data input-stream))

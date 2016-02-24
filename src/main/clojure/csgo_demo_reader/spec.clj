@@ -23,6 +23,20 @@
         [num-bytes-read new-result]
         (recur num-bytes-read new-result)))))
 
+(defn read-short [input-stream]
+  (let [b (.read input-stream)]
+    (bit-or (bit-shift-left (.read input-stream) 8) b)))
+
+(defn read-string [input-stream size]
+  (loop [count 0
+         acc []]
+    (if (< count size)
+      (let [c-code (.read input-stream)]
+        (if (zero? c-code)
+          acc
+          (recur (inc count) (conj acc (char c-code)))))
+      acc)))
+
 (defn read-many [value-types buff pos]
   (reduce (fn [coll value-type]
             (let [prev-readed (first coll)
