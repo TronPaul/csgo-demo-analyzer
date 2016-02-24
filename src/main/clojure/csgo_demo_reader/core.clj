@@ -119,26 +119,32 @@
 (defn ret-inc-pos [pos v]
   (apply conj [(+ pos (first v))] (rest v)))
 
-(defn read-demo-packet [input-stream {packet-cmd-fns :packet-cmds :as handler-fns :or {packet-cmd-fns {}}}]
+(defn read-net-message-header [input-stream]
+  (reduce (fn [[bytes-read-acc header] name]
+            (let [[bytes-read ret] (spec/read-var-int32 input-stream)]
+              [(+ bytes-read-acc bytes-read) (assoc header name ret)])) [0 {}] [:cmd :size]))
+
+(defn read-net-message [input-stream]
+  (let [[num-bytes-read {:keys [cmd size]}] (read-net-message-header input-stream)
+        cmd-proto (get commands cmd)]
+    (if cmd-proto
+      (let [b (buf/allocate size)]
+        (util/safe-read input-stream (.array b))
+        [(+ num-bytes-read size) (protobuf-load cmd-proto (.array b))])
+      (do
+        (swap! unknown-msg-count inc)
+        [(+ num-bytes-read (util/safe-skip input-stream size)) nil]))))
+
+(defn read-demo-packet [input-stream {packet-cmd-fns :packet-cmds :or {packet-cmd-fns {}} :as handler-fns}]
   (let [packet-size (read-packet-size input-stream)]
-    (loop [num-bytes-read 0]
+    (loop [num-bytes-read 0
+           packets []]
       (if (<= packet-size num-bytes-read)
         num-bytes-read
-        (let [[num-bytes-read cmd] (ret-inc-pos num-bytes-read (spec/read-var-int32 input-stream))
-              [num-bytes-read size] (ret-inc-pos num-bytes-read (spec/read-var-int32 input-stream))
-              cmd-proto (get commands cmd)
-              cmd-fn (get packet-cmd-fns cmd)
-              num-bytes-read (+ num-bytes-read size)]
-          (if (and cmd-proto cmd-fn)
-            (let [b (buf/allocate size)]
-              (.read input-stream (.array b))
-              (cmd-fn (protobuf-load cmd-proto (.array b)) handler-fns))
-            (do
-              (swap! unknown-msg-count inc)
-              (util/safe-skip input-stream size)))
-          (recur num-bytes-read))))))
+        (let [[new-num-bytes-read msg] (read-net-message input-stream)]
+          (recur (+ num-bytes-read new-num-bytes-read) (conj packets msg)))))))
 
-(defn read-data-tables [input-stream]
+(defn read-data-tables [input-stream handler-fns]
   (skip-raw-data input-stream))
 
 (defn read-string-tables [input-stream]
@@ -170,7 +176,7 @@
                                   (read-user-cmd input-stream)
                                   (recur))
         (= (:cmd cmd-header) 6) (do
-                                  (read-data-tables input-stream)
+                                  (read-data-tables input-stream handler-fns)
                                   (recur))
         (= (:cmd cmd-header) 7) nil
         (= (:cmd cmd-header) 8) (throw (UnsupportedOperationException. "Cannot parse customdata"))
@@ -214,9 +220,76 @@
   (fn [game-event-cmd handler-fns]
     (handle-game-event game-event-cmd @game-event-list-atom handler-fns)))
 
+(def bit-mask-table
+  (concat [0]
+          (map #(- (bit-shift-left 1 %) 1) (range 1 31))
+          [0x7fffffff
+           0xffffffff]))
+
+(defn get-bits [n {:keys [byte-size cur-byte buffer]}]
+  (if (> byte-size n)
+    [(bit-and cur-byte (nth bit-mask-table n)) {:byte-size (- byte-size n) :cur-byte (bit-shift-right cur-byte n) :buffer buffer}]
+    (let [n (- n byte-size)
+          ret cur-byte
+          [ret2 new-byte-buffer] (get-bits n {:byte-size 8 :cur-byte (Integer/reverseBytes (.get buffer)) :buffer buffer})]
+      [(bit-or ret (bit-shift-left ret2 8)) new-byte-buffer])))
+
+(defn get-ubit-var [byte-buffer]
+  (let [[ret byte-buffer] (get-bits 6 byte-buffer)]
+    (if-let [n-bits (get {16 4, 32 8, 48 48} (bit-and ret (bit-or 16 32)))]
+      (let [[ret2 byte-buffer] (get-bits n-bits byte-buffer)]
+        [(bit-or (bit-and ret 15) (bit-shift-left ret2 4)) byte-buffer])
+      [ret byte-buffer])))
+
+(defn get-update-type [byte-buffer]
+  (let [[leave-pvs byte-buffer] (get-bits 1 byte-buffer)]
+    (if (zero? leave-pvs)
+      (let [[enter-pvs byte-buffer] (get-bits 1 byte-buffer)]
+        (if (not (zero? enter-pvs))
+          [:enter byte-buffer]
+          [:delta byte-buffer]))
+      (let [[delete-pvs byte-buffer] (get-bits 1 byte-buffer)]
+        (if (not (zero? delete-pvs))
+          [:leave byte-buffer]
+          [:leave byte-buffer])))))
+
+(defn handle-packet-entities [packet-entities-cmd handler-fns]
+  (let [entry-count (:updated-entries packet-entities-cmd)]
+    (loop [acc []
+           header-base -1
+           entries-remaining (dec entry-count)
+           byte-buffer {:byte-size 0 :cur-byte 0 :buffer (.asReadOnlyByteBuffer (:entity-data packet-entities-cmd))}]
+      (let [is-entity (>= entries-remaining 0)
+            [entity-id-diff byte-buffer] (if is-entity
+                                            (get-ubit-var byte-buffer)
+                                            [nil byte-buffer])
+            entity-id (if is-entity
+                        (+ header-base 1 entity-id-diff))
+            header-base (if is-entity
+                          entity-id
+                          header-base)
+            [update-type byte-buffer] (if is-entity
+                                         (get-update-type byte-buffer)
+                                         [:finish byte-buffer])
+            update-type (if (or (not is-entity) (> entity-id 9999))
+                          :finish
+                          update-type)]
+        (case update-type
+          :enter (do
+                   (println byte-buffer)
+                   (recur acc header-base (dec entries-remaining) byte-buffer))
+          :leave (do
+                   (println byte-buffer)
+                   (recur acc header-base (dec entries-remaining) byte-buffer))
+          :delta (do
+                   (println byte-buffer)
+                   (recur acc header-base (dec entries-remaining) byte-buffer))
+          :finish acc
+          (throw (RuntimeException. (str "Incorrect update-type " update-type))))))))
+
 (defn read-demo
   ([fname]
-   (read-demo fname {:demo-header println :packet-cmds (reduce #(assoc %1 %2 (fn [cmd fns] (println cmd))) {} (keys commands))}))
+   (read-demo fname {:demo-header println :packet-cmds {26 handle-packet-entities}}))
   ([fname {demo-header-fn :demo-header :as handler-fns}]
    (with-open [is (io/input-stream fname)]
      (demo-header-fn (read-demo-header is))
