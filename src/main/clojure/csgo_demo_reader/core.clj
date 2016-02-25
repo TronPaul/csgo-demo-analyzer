@@ -121,24 +121,27 @@
             (let [[bytes-read ret] (spec/read-var-int32 input-stream)]
               [(+ bytes-read-acc bytes-read) (assoc header name ret)])) [0 {}] [:cmd :size]))
 
-(defn read-net-message [input-stream]
+(defn read-net-message [input-stream demo-data handler-fns]
   (let [[num-bytes-read {:keys [cmd size]}] (read-net-message-header input-stream)
         cmd-proto (get commands cmd)]
     (if cmd-proto
       (let [b (buf/allocate size)]
         (util/safe-read input-stream (.array b))
-        [(+ num-bytes-read size) (protobuf-load cmd-proto (.array b))])
+        (let [msg (protobuf-load cmd-proto (.array b))]
+          (if-let [cmd-fn (get (:packet-cmds handler-fns) cmd)]
+            (cmd-fn msg demo-data handler-fns))
+          [(+ num-bytes-read size) msg]))
       (do
         (swap! unknown-msg-count inc)
         [(+ num-bytes-read (util/safe-skip input-stream size)) nil]))))
 
-(defn read-demo-packet [input-stream {packet-cmd-fns :packet-cmds :or {packet-cmd-fns {}} :as handler-fns}]
+(defn read-demo-packet [input-stream demo-data handler-fns]
   (let [packet-size (read-packet-size input-stream)]
     (loop [num-bytes-read 0
            net-messages []]
       (if (<= packet-size num-bytes-read)
         [num-bytes-read net-messages]
-        (let [[new-num-bytes-read msg] (read-net-message input-stream)]
+        (let [[new-num-bytes-read msg] (read-net-message input-stream demo-data handler-fns)]
           (recur (+ num-bytes-read new-num-bytes-read) (conj net-messages msg)))))))
 
 (defn read-data-tables-packets [input-stream]
@@ -147,7 +150,7 @@
            net-messages []]
       (if (<= packet-size num-bytes-read)
         [num-bytes-read net-messages]
-        (let [[num-bytes-read msg] (update-in (read-net-message input-stream) [0] + num-bytes-read)]
+        (let [[num-bytes-read msg] (update-in (read-net-message input-stream {} {}) [0] + num-bytes-read)]
           (if (:is-end msg)
             (do
               [num-bytes-read net-messages])
@@ -182,7 +185,7 @@
 (defn handle-demo-packet [input-stream demo-data handler-fns]
   (read-demo-cmd-info input-stream)
   (read-sequence-info input-stream)
-  (read-demo-packet input-stream handler-fns)
+  (read-demo-packet input-stream demo-data handler-fns)
   demo-data)
 
 (defn read-demo-cmds [input-stream handler-fns]
@@ -241,12 +244,15 @@
            0xffffffff]))
 
 (defn get-bits [n {:keys [byte-size cur-byte buffer]}]
-  (if (> byte-size n)
-    [(bit-and cur-byte (nth bit-mask-table n)) {:byte-size (- byte-size n) :cur-byte (bit-shift-right cur-byte n) :buffer buffer}]
-    (let [n (- n byte-size)
-          ret cur-byte
-          [ret2 new-byte-buffer] (get-bits n {:byte-size 8 :cur-byte (Integer/reverseBytes (.get buffer)) :buffer buffer})]
-      [(bit-or ret (bit-shift-left ret2 8)) new-byte-buffer])))
+  (loop [ret 0
+         bits-needed n
+         byte-size byte-size
+         cur-byte cur-byte]
+    (if (>= byte-size bits-needed)
+      [(bit-or (bit-shift-left (bit-and cur-byte (nth bit-mask-table bits-needed)) (- n bits-needed)) ret) {:byte-size (- byte-size bits-needed) :cur-byte (if (zero? (- byte-size bits-needed))
+                                                                                                                                                       0
+                                                                                                                                                       (bit-shift-right cur-byte bits-needed)) :buffer buffer}]
+      (recur (bit-or (bit-shift-left ret bits-needed) (bit-and cur-byte (nth bit-mask-table byte-size))) (- bits-needed byte-size) 8 (.get buffer)))))
 
 (defn get-ubit-var [byte-buffer]
   (let [[ret byte-buffer] (get-bits 6 byte-buffer)]
@@ -267,7 +273,15 @@
           [:leave byte-buffer]
           [:leave byte-buffer])))))
 
-(defn handle-packet-entities [packet-entities-cmd handler-fns]
+(defn int-log2 [n]
+  (loop [ret 0
+         check n]
+    (let [check (bit-shift-right check 1)]
+      (if (not (zero? check))
+        (recur (inc ret) check)
+        (inc ret)))))
+
+(defn handle-packet-entities [packet-entities-cmd demo-data handler-fns]
   (let [entry-count (:updated-entries packet-entities-cmd)]
     (loop [acc []
            header-base -1
@@ -289,8 +303,10 @@
                           :finish
                           update-type)]
         (case update-type
-          :enter (do
-                   (println byte-buffer)
+          :enter (let [[class-id byte-buffer] (get-bits (int-log2 (count (:classes demo-data))) byte-buffer)
+                       [serial-num byte-buffer] (get-bits 10 byte-buffer)]
+                   (println "class-id " class-id)
+                   (println "serial-num " serial-num)
                    (recur acc header-base (dec entries-remaining) byte-buffer))
           :leave (do
                    (println byte-buffer)
