@@ -243,7 +243,7 @@
           [0x7fffffff
            0xffffffff]))
 
-(defn get-bits [n {:keys [byte-size cur-byte buffer]}]
+(defn get-bits [{:keys [byte-size cur-byte buffer]} n]
   (loop [ret 0
          bits-needed n
          byte-size byte-size
@@ -254,22 +254,31 @@
                                                                                                                                                        (bit-shift-right cur-byte bits-needed)) :buffer buffer}]
       (recur (bit-or (bit-shift-left ret bits-needed) (bit-and cur-byte (nth bit-mask-table byte-size))) (- bits-needed byte-size) 8 (.get buffer)))))
 
+(defn get-bool [byte-buffer]
+  (update-in (get-bits byte-buffer 1) [0] (comp not zero?)))
+
 (defn get-ubit-var [byte-buffer]
-  (let [[ret byte-buffer] (get-bits 6 byte-buffer)]
+  (let [[ret byte-buffer] (get-bits byte-buffer 6)]
     (if-let [n-bits (get {16 4, 32 8, 48 48} (bit-and ret (bit-or 16 32)))]
-      (let [[ret2 byte-buffer] (get-bits n-bits byte-buffer)]
+      (let [[ret2 byte-buffer] (get-bits byte-buffer n-bits)]
         [(bit-or (bit-and ret 15) (bit-shift-left ret2 4)) byte-buffer])
       [ret byte-buffer])))
 
+(defn ret-swap-byte-buffer [byte-buffer-atom f & args]
+  (let [old-val (deref byte-buffer-atom)
+        [ret new-byte-buffer] (apply f args old-val)]
+    (compare-and-set! byte-buffer-atom old-val new-byte-buffer)
+    ret))
+
 (defn get-update-type [byte-buffer]
-  (let [[leave-pvs byte-buffer] (get-bits 1 byte-buffer)]
-    (if (zero? leave-pvs)
-      (let [[enter-pvs byte-buffer] (get-bits 1 byte-buffer)]
-        (if (not (zero? enter-pvs))
+  (let [[leave-pvs byte-buffer] (get-bool byte-buffer)]
+    (if (not leave-pvs)
+      (let [[enter-pvs byte-buffer] (get-bool byte-buffer)]
+        (if enter-pvs
           [:enter byte-buffer]
           [:delta byte-buffer]))
-      (let [[delete-pvs byte-buffer] (get-bits 1 byte-buffer)]
-        (if (not (zero? delete-pvs))
+      (let [[delete-pvs byte-buffer] (get-bool byte-buffer)]
+        (if delete-pvs
           [:leave byte-buffer]
           [:leave byte-buffer])))))
 
@@ -280,6 +289,26 @@
       (if (not (zero? check))
         (recur (inc ret) check)
         (inc ret)))))
+
+(defn read-field-index [new-way last-index byte-buffer]
+  (let [byte-buffer (atom byte-buffer)
+        ret-and-update (partial ret-swap-byte-buffer byte-buffer)]
+    (if (and new-way (ret-and-update get-bool))
+      [(inc last-index) @byte-buffer])
+    (let [ret (if (and new-way (ret-and-update get-bool))
+                (ret-and-update get-bits 3)
+                (let [ret (ret-and-update get-bits 3)]
+                  (case (bit-and ret (bit-or 32 64))
+                    32 (bit-or (bit-and ret (bit-not 96)) (bit-shift-left (ret-and-update get-bits 2) 5))
+                    64 (bit-or (bit-and ret (bit-not 96)) (bit-shift-left (ret-and-update get-bits 4) 5))
+                    96 (bit-or (bit-and ret (bit-not 96)) (bit-shift-left (ret-and-update get-bits 7) 5)))))]
+      (if (= ret 0xfff)
+        [-1 @byte-buffer]
+        [(+ last-index 1 ret) @byte-buffer]))))
+
+(defn read-new-entity [class-id byte-buffer]
+  (let [new-way (not (zero? (get-bits byte-buffer 1)))]
+    ))
 
 (defn handle-packet-entities [packet-entities-cmd demo-data handler-fns]
   (let [entry-count (:updated-entries packet-entities-cmd)]
@@ -303,8 +332,8 @@
                           :finish
                           update-type)]
         (case update-type
-          :enter (let [[class-id byte-buffer] (get-bits (int-log2 (count (:classes demo-data))) byte-buffer)
-                       [serial-num byte-buffer] (get-bits 10 byte-buffer)]
+          :enter (let [[class-id byte-buffer] (get-bits byte-buffer (int-log2 (count (:classes demo-data))))
+                       [serial-num byte-buffer] (get-bits byte-buffer 10)]
                    (println "class-id " class-id)
                    (println "serial-num " serial-num)
                    (recur acc header-base (dec entries-remaining) byte-buffer))
@@ -319,7 +348,7 @@
 
 (defn read-demo
   ([fname]
-   (read-demo fname {:demo-header println :packet-cmds {26 handle-packet-entities}}))
+   (read-demo fname {:demo-header println :packet-cmds {}}))
   ([fname {demo-header-fn :demo-header :as handler-fns}]
    (with-open [is (io/input-stream fname)]
      (demo-header-fn (read-demo-header is))
