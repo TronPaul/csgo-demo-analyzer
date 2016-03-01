@@ -383,11 +383,28 @@
   (let [[len byte-buffer] (read-ubit-long byte-buffer 9)]
     (get-bits byte-buffer (* len 8))))
 
-(defn decode-array [{:keys [flags num-bits array-element] :as property} byte-buffer]
-  )
+(defn decode-array [{:keys [flags num-bits array-element num-elements] :as property} byte-buffer]
+  (let [num-bits (Integer/bitCount num-elements)
+        num-elements-to-read (read-ubit-long byte-buffer num-bits)]
+    (loop [acc []
+           byte-buffer byte-buffer]
+      (if (>= (count acc) num-elements-to-read)
+        acc
+        (let [[v byte-buffer] (read-property array-element byte-buffer)]
+          (recur (conj acc v) byte-buffer))))))
 
 (defn decode-int-64 [{:keys [flags num-bits] :as property} byte-buffer]
-  )
+  (if (bit-and flags (bit-shift-left 1 19))
+    (if (bit-and flags (bit-shift-left 1 0))
+      (read-var-int-64 byte-buffer)
+      (read-signed-var-int-64 byte-buffer))
+    (if (bit-and flags (bit-shift-left 1 0))
+      (let [[neg byte-buffer] (get-bool byte-buffer)
+            [v byte-buffer] (read-ubit-long byte-buffer 63)]
+        (if neg
+          [(unchecked-negate v) byte-buffer]
+          [v byte-buffer])))
+    (read-ubit-long byte-buffer 64)))
 
 (defn read-property [property byte-buffer]
   (case (:type property)
