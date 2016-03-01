@@ -156,6 +156,28 @@
               [num-bytes-read net-messages])
             (recur num-bytes-read (conj net-messages msg))))))))
 
+(defn find-data-table-by-name [name data-tables]
+  (first (filter #(= name (:net-table-name %)) data-tables)))
+
+(defn parse-properties
+  ([data-table data-tables]
+    (parse-properties data-table data-tables []))
+  ([data-table data-tables path]
+   (loop [props-acc []
+          props-rem (:props data-table)]
+     (if (not (empty? props-rem))
+       (let [{:keys [type var-name flags] :as prop} (first props-rem)
+             prop (assoc prop :exclude (bit-and flags (bit-shift-left 1 6)))
+             props-rem (subvec props-rem 1)]
+         (cond
+           (= type 6) (let [path (if (and (bit-and flags (bit-shift-left 1 11)) (not (= var-name "baseclass")))
+                                   (conj path var-name)
+                                   path)]
+                        (recur (into [] (concat props-acc (parse-properties (find-data-table-by-name (:dt-name prop) data-tables) data-tables path))) props-rem))
+           (= type 5) (recur (update-in props-acc [(dec (count props-acc))] #(assoc %2 :array-element %1) prop) props-rem)
+           :else (recur (conj props-acc {:path path :prop prop}) props-rem)))
+       props-acc))))
+
 (defn read-data-tables [input-stream demo-data handler-fns]
   (let [data-tables (second (read-data-tables-packets input-stream))
         num-server-classes (spec/read-short input-stream)]
@@ -164,10 +186,15 @@
       (if (> num-server-classes classes-read)
         (let [class-id (spec/read-short input-stream)
               name (spec/read-string input-stream 256)
-              data-table-name (spec/read-string input-stream 256)]
+              data-table-name (spec/read-string input-stream 256)
+              properties (parse-properties (find-data-table-by-name data-table-name data-tables) data-tables)]
           (recur (inc classes-read) (conj classes {:class-id class-id
                                                    :name name
-                                                   :data-table-name data-table-name})))
+                                                   :data-table-name data-table-name
+                                                   :properties (sort (fn [x y]
+                                                                       (or (< (:priority x) (:priority y))
+                                                                           (and (not (zero? (bit-and (:flags x) (bit-shift-left 1 18))))
+                                                                                (zero? (bit-and (:flags y) (bit-shift-left 1 18)))))) properties)})))
         (update-in (update-in demo-data [:data-tables] (comp (partial into []) concat) data-tables) [:classes] (comp (partial into []) concat) classes)))))
 
 (defn read-string-tables [input-stream demo-data]
@@ -294,21 +321,99 @@
   (let [byte-buffer (atom byte-buffer)
         ret-and-update (partial ret-swap-byte-buffer byte-buffer)]
     (if (and new-way (ret-and-update get-bool))
-      [(inc last-index) @byte-buffer])
-    (let [ret (if (and new-way (ret-and-update get-bool))
-                (ret-and-update get-bits 3)
-                (let [ret (ret-and-update get-bits 3)]
-                  (case (bit-and ret (bit-or 32 64))
-                    32 (bit-or (bit-and ret (bit-not 96)) (bit-shift-left (ret-and-update get-bits 2) 5))
-                    64 (bit-or (bit-and ret (bit-not 96)) (bit-shift-left (ret-and-update get-bits 4) 5))
-                    96 (bit-or (bit-and ret (bit-not 96)) (bit-shift-left (ret-and-update get-bits 7) 5)))))]
-      (if (= ret 0xfff)
-        [-1 @byte-buffer]
-        [(+ last-index 1 ret) @byte-buffer]))))
+      [(inc last-index) @byte-buffer]
+      (let [ret (if (and new-way (ret-and-update get-bool))
+                  (ret-and-update get-bits 3)
+                  (let [ret (ret-and-update get-bits 7)
+                        n-bits (get {32 2 64 4 96 7} (bit-and ret (bit-or 32 64)))]
+                    (bit-or (bit-and ret (bit-not 96)) (bit-shift-left (ret-and-update get-bits n-bits) 5))))]
+        (if (= ret 0xfff)
+          [-1 @byte-buffer]
+          [(+ last-index 1 ret) @byte-buffer])))))
 
-(defn read-new-entity [class-id byte-buffer]
-  (let [new-way (not (zero? (get-bits byte-buffer 1)))]
-    ))
+(defn read-field-indicies [new-way byte-buffer]
+  (loop [[index byte-buffer] (read-field-index new-way -1 byte-buffer)
+         acc []]
+    (if (= -1 index)
+      [acc byte-buffer]
+      (recur (read-field-index new-way index byte-buffer) (conj acc index)))))
+
+(defn decode-int [{:keys [flags num-bits]} byte-buffer]
+  (if (bit-and flags (bit-shift-left 1 19))
+    (if (bit-and flags (bit-shift-left 1 0))
+      (read-var-int-32 byte-buffer)
+      (read-signed-var-int-32 byte-buffer))
+    (if (bit-and flags (bit-shift-left 1 0))
+      (read-ubit-long byte-buffer num-bits)
+      (read-sbit-long byte-buffer num-bits))))
+
+(defn decode-float [{:keys [flags num-bits]} byte-buffer]
+  (cond
+    (bit-and flags (bit-shift-left 1 1)) (read-bit-coord byte-buffer)
+    (bit-and flags (bit-shift-left 1 12)) (read-bit-coord-mp byte-buffer)
+    (bit-and flags (bit-shift-left 1 13)) (read-bit-coord-mp-low-precision byte-buffer)
+    (bit-and flags (bit-shift-left 1 14)) (read-bit-coord-mp-integral byte-buffer)
+    (bit-and flags (bit-shift-left 1 2)) (read-bit-float byte-buffer)
+    (bit-and flags (bit-shift-left 1 5)) (read-bit-normal byte-buffer)
+    (bit-and flags (bit-shift-left 1 15)) (read-bit-cell-coord byte-buffer num-bits)
+    (bit-and flags (bit-shift-left 1 16)) (read-bit-cell-coord-low-precision byte-buffer num-bits)
+    (bit-and flags (bit-shift-left 1 17)) (read-bit-cell-coord-integral byte-buffer num-bits)
+    :else (throw (RuntimeException.))))
+
+(defn decode-vector-xy [{:keys [flags num-bits] :as property} byte-buffer]
+  (let [[x byte-buffer] (decode-float property byte-buffer)
+        [y byte-buffer] (decode-float property byte-buffer)]
+    [[x y] byte-buffer]))
+
+(defn decode-vector [{:keys [flags num-bits] :as property} byte-buffer]
+  (let [[[x y] byte-buffer] (decode-vector-xy property byte-buffer)]
+    (if (bit-and flags (bit-shift-left 1 5))
+      (let [[z byte-buffer] (decode-float property byte-buffer)]
+        [[x y z] byte-buffer])
+      (let [[negative? byte-buffer] (get-bool byte-buffer)
+            v0v0v1v1 (+ (* x x) (* y y))
+            z (if (< v0v0v1v1 1.0)
+                (Math/sqrt (- 1 v0v0v1v1))
+                0)]
+        (if negative?
+          [[x y (unchecked-negate z)] byte-buffer]
+          [[x y z] byte-buffer])))))
+
+(defn decode-string [{:keys [flags num-bits] :as property} byte-buffer]
+  (let [[len byte-buffer] (read-ubit-long byte-buffer 9)]
+    (get-bits byte-buffer (* len 8))))
+
+(defn decode-array [{:keys [flags num-bits array-element] :as property} byte-buffer]
+  )
+
+(defn decode-int-64 [{:keys [flags num-bits] :as property} byte-buffer]
+  )
+
+(defn read-property [property byte-buffer]
+  (case (:type property)
+    0 (decode-int property byte-buffer)
+    1 (decode-float property byte-buffer)
+    2 (decode-vector property byte-buffer)
+    3 (decode-vector-xy property byte-buffer)
+    4 (decode-string property byte-buffer)
+    5 (decode-array property byte-buffer)
+    6 nil
+    7 (decode-int-64 property byte-buffer)
+    (throw (RuntimeException.))))
+
+(defn read-new-entity [class-id data-tables byte-buffer]
+  (let [data-table (get data-tables class-id)
+        [new-way byte-buffer] (get-bool byte-buffer)
+        [field-indicies byte-buffer] (read-field-indicies new-way byte-buffer)
+        fields (map (partial nth (:properties data-table)) field-indicies)]
+    (loop [vals {}
+           fields-rem fields
+           byte-buffer byte-buffer]
+      (if (empty? fields-rem)
+        vals
+        (let [prop (first fields-rem)
+              [v byte-buffer] (read-property prop byte-buffer)]
+          (recur (update-in vals (conj (:path prop) (:name prop)) v) (rest fields-rem) byte-buffer))))))
 
 (defn handle-packet-entities [packet-entities-cmd demo-data handler-fns]
   (let [entry-count (:updated-entries packet-entities-cmd)]
@@ -334,21 +439,19 @@
         (case update-type
           :enter (let [[class-id byte-buffer] (get-bits byte-buffer (int-log2 (count (:classes demo-data))))
                        [serial-num byte-buffer] (get-bits byte-buffer 10)]
-                   (println "class-id " class-id)
-                   (println "serial-num " serial-num)
-                   (recur acc header-base (dec entries-remaining) byte-buffer))
+                   (recur (conj acc (read-new-entity class-id (:data-tables demo-data) byte-buffer)) header-base (dec entries-remaining) byte-buffer))
           :leave (do
-                   (println byte-buffer)
+                   (throw (RuntimeException.))
                    (recur acc header-base (dec entries-remaining) byte-buffer))
           :delta (do
-                   (println byte-buffer)
+                   (throw (RuntimeException.))
                    (recur acc header-base (dec entries-remaining) byte-buffer))
           :finish acc
           (throw (RuntimeException. (str "Incorrect update-type " update-type))))))))
 
 (defn read-demo
   ([fname]
-   (read-demo fname {:demo-header println :packet-cmds {}}))
+   (read-demo fname {:demo-header println :packet-cmds {26 handle-packet-entities}}))
   ([fname {demo-header-fn :demo-header :as handler-fns}]
    (with-open [is (io/input-stream fname)]
      (demo-header-fn (read-demo-header is))

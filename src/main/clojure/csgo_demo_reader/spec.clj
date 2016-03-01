@@ -2,7 +2,8 @@
   (:require [octet.core :as buf]
             [octet.buffer :as buffer]
             [octet.spec.basic :as basic]
-            [octet.spec :as spec]))
+            [octet.spec :as spec]
+            [clojure.string :refer [join]]))
 
 (defn read-int32LE [_ pos]
   (Integer/reverseBytes (buffer/read-int _ pos)))
@@ -33,9 +34,9 @@
     (if (< count size)
       (let [c-code (.read input-stream)]
         (if (zero? c-code)
-          acc
+          (join acc)
           (recur (inc count) (conj acc (char c-code)))))
-      acc)))
+      (join acc))))
 
 (defn read-many [value-types buff pos]
   (reduce (fn [coll value-type]
