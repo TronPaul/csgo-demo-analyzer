@@ -171,11 +171,15 @@
              prop (assoc prop :exclude (bit-and flags (bit-shift-left 1 6)))
              props-rem (subvec props-rem 1)]
          (cond
-           (= type 6) (let [path (if (and (bit-and flags (bit-shift-left 1 11)) (not (= var-name "baseclass")))
+           (= type 6) (let [prepend? (not (zero? (bit-and flags (bit-shift-left 1 11))))
+                            path (if (not (= var-name "baseclass"))
                                    (conj path var-name)
-                                   path)]
+                                   path)
+                            new-props (parse-properties (find-data-table-by-name (:dt-name prop) data-tables) data-tables path)]
+                        (if prepend?
+                          (into [] (concat new-props props-acc)))
                         (recur (into [] (concat props-acc (parse-properties (find-data-table-by-name (:dt-name prop) data-tables) data-tables path))) props-rem))
-           (= type 5) (recur (update-in props-acc [(dec (count props-acc))] #(assoc %2 :array-element %1) prop) props-rem)
+           (= type 5) (recur (conj props-acc (merge prop {:array-element (peek props-acc) :path path})) props-rem)
            :else (recur (conj props-acc (assoc prop :path path)) props-rem)))
        props-acc))))
 
@@ -291,7 +295,9 @@
                 (bit-buf/read-bits byte-buffer 3)
                 (let [ret (bit-buf/read-bits byte-buffer 7)
                       n-bits (get {32 2 64 4 96 7} (bit-and ret (bit-or 32 64)))]
-                  (bit-or (bit-and ret (bit-not 96)) (bit-shift-left (bit-buf/read-bits byte-buffer n-bits) 5))))]
+                  (if n-bits
+                    (bit-or (bit-and ret (bit-not 96)) (bit-shift-left (bit-buf/read-bits byte-buffer n-bits) 5))
+                    ret)))]
       (if (= ret 0xfff)
         -1
         (+ last-index 1 ret)))))
@@ -379,21 +385,21 @@
               (recur (conj acc v) byte-buffer)))))
     6 nil
     7 (decode-int-64 property byte-buffer)
-    (throw (RuntimeException.))))
+    (throw (RuntimeException. (str "unknown property type " (:type property))))))
 
-(defn read-new-entity [class-id data-tables byte-buffer]
-  (let [data-table (get data-tables class-id)
+(defn read-new-entity [class-id classes byte-buffer]
+  (let [clazz (first (filter (comp (partial = class-id) :class-id) classes))
         new-way (bit-buf/read-bool byte-buffer)
         field-indicies (read-field-indicies new-way byte-buffer)
-        fields (map (partial nth (:properties data-table)) field-indicies)]
+        fields (map (partial nth (:properties clazz)) field-indicies)]
     (loop [vals {}
            fields-rem fields
            byte-buffer byte-buffer]
       (if (empty? fields-rem)
         vals
         (let [prop (first fields-rem)
-              [v byte-buffer] (read-property prop byte-buffer)]
-          (recur (update-in vals (conj (:path prop) (:name prop)) v) (rest fields-rem) byte-buffer))))))
+              v (read-property prop byte-buffer)]
+          (recur (assoc-in vals (conj (:path prop) (:name prop)) v) (rest fields-rem) byte-buffer))))))
 
 (defn handle-packet-entities [packet-entities-cmd demo-data handler-fns]
   (let [entry-count (:updated-entries packet-entities-cmd)]
@@ -419,12 +425,12 @@
         (case update-type
           :enter (let [class-id (bit-buf/read-bits byte-buffer (int-log2 (count (:classes demo-data))))
                        serial-num (bit-buf/read-bits byte-buffer 10)]
-                   (recur (conj acc (read-new-entity class-id (:data-tables demo-data) byte-buffer)) header-base (dec entries-remaining) byte-buffer))
+                   (recur (conj acc (read-new-entity class-id (:classes demo-data) byte-buffer)) header-base (dec entries-remaining) byte-buffer))
           :leave (do
-                   (throw (RuntimeException.))
+                   (throw (RuntimeException. "leave"))
                    (recur acc header-base (dec entries-remaining) byte-buffer))
           :delta (do
-                   (throw (RuntimeException.))
+                   (throw (RuntimeException. "delta"))
                    (recur acc header-base (dec entries-remaining) byte-buffer))
           :finish acc
           (throw (RuntimeException. (str "Incorrect update-type " update-type))))))))
