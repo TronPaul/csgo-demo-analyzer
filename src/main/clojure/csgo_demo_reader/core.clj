@@ -161,9 +161,9 @@
   (first (filter #(= name (:net-table-name %)) data-tables)))
 
 (defn parse-properties
-  ([data-table data-tables]
-    (parse-properties data-table data-tables []))
-  ([data-table data-tables path]
+  ([data-table data-tables-by-name]
+    (parse-properties data-table data-tables-by-name []))
+  ([data-table data-tables-by-name path]
    (loop [props-acc []
           props-rem (:props data-table)]
      (if (not (empty? props-rem))
@@ -175,16 +175,17 @@
                             path (if (not (= var-name "baseclass"))
                                    (conj path var-name)
                                    path)
-                            new-props (parse-properties (find-data-table-by-name (:dt-name prop) data-tables) data-tables path)]
+                            new-props (parse-properties (get data-tables-by-name (:dt-name prop)) data-tables-by-name path)]
                         (if prepend?
                           (into [] (concat new-props props-acc)))
-                        (recur (into [] (concat props-acc (parse-properties (find-data-table-by-name (:dt-name prop) data-tables) data-tables path))) props-rem))
+                        (recur (into [] (concat props-acc (parse-properties (get data-tables-by-name (:dt-name prop)) data-tables-by-name path))) props-rem))
            (= type 5) (recur (conj props-acc (merge prop {:array-element (peek props-acc) :path path})) props-rem)
            :else (recur (conj props-acc (assoc prop :path path)) props-rem)))
        props-acc))))
 
 (defn read-data-tables [input-stream demo-data handler-fns]
   (let [data-tables (second (read-data-tables-packets input-stream))
+        data-tables-by-name (reduce #(assoc %1 (:net-table-name %2) %2) {} data-tables)
         num-server-classes (spec/read-short input-stream)]
     (loop [classes-read 0
            classes []]
@@ -192,7 +193,7 @@
         (let [class-id (spec/read-short input-stream)
               name (spec/read-string input-stream 256)
               data-table-name (spec/read-string input-stream 256)
-              properties (parse-properties (find-data-table-by-name data-table-name data-tables) data-tables)]
+              properties (parse-properties (get data-tables-by-name data-table-name) data-tables-by-name)]
           (recur (inc classes-read) (conj classes {:class-id class-id
                                                    :name name
                                                    :data-table-name data-table-name
@@ -399,7 +400,8 @@
         vals
         (let [prop (first fields-rem)
               v (read-property prop byte-buffer)]
-          (recur (assoc-in vals (conj (:path prop) (:name prop)) v) (rest fields-rem) byte-buffer))))))
+          (println prop)
+          (recur (assoc-in vals (conj (:path prop) (:var-name prop)) v) (rest fields-rem) byte-buffer))))))
 
 (defn handle-packet-entities [packet-entities-cmd demo-data handler-fns]
   (let [entry-count (:updated-entries packet-entities-cmd)]
@@ -407,6 +409,7 @@
            header-base -1
            entries-remaining (dec entry-count)
            byte-buffer (bit-buf/bit-buffer (.asReadOnlyByteBuffer (:entity-data packet-entities-cmd)))]
+      (println acc)
       (let [is-entity (>= entries-remaining 0)
             entity-id-diff (if is-entity
                              (bit-buf/read-unsigned-bit-var byte-buffer)

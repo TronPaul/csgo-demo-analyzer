@@ -9,4 +9,9 @@
                                                             ; DON'T CHANGE THE VERSION.
                  [funcool/octet "0.2.0"]]
   :source-paths ["src/main/clojure"]
-  :java-source-paths ["src/main/java"])
+  :java-source-paths ["src/main/java"]
+  :profiles {:dev {:jvm-opts ["-Dcom.sun.management.jmxremote"
+                              "-Dcom.sun.management.jmxremote.ssl=false"
+                              "-Dcom.sun.management.jmxremote.authenticate=false"
+                              "-Dcom.sun.management.jmxremote.port=43210"]
+                   }})
