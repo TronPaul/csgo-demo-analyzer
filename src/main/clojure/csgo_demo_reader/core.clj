@@ -14,7 +14,8 @@
                       NetmessagesPublic$CSVCMsg_FixAngle NetmessagesPublic$CSVCMsg_CrosshairAngle NetmessagesPublic$CSVCMsg_BSPDecal
                       NetmessagesPublic$CSVCMsg_UserMessage NetmessagesPublic$CSVCMsg_GameEvent NetmessagesPublic$CSVCMsg_PacketEntities
                       NetmessagesPublic$CSVCMsg_TempEntities NetmessagesPublic$CSVCMsg_Prefetch NetmessagesPublic$CSVCMsg_Menu
-                      NetmessagesPublic$CSVCMsg_GameEventList NetmessagesPublic$CSVCMsg_GetCvarValue)))
+                      NetmessagesPublic$CSVCMsg_GameEventList NetmessagesPublic$CSVCMsg_GetCvarValue)
+           (csgo_demo_reader Property PropSorter)))
 
 (def unknown-msg-count (atom 0))
 
@@ -157,32 +158,46 @@
               [num-bytes-read net-messages])
             (recur num-bytes-read (conj net-messages msg))))))))
 
-(defn find-data-table-by-name [name data-tables]
-  (first (filter #(= name (:net-table-name %)) data-tables)))
-
 (defn parse-properties
   ([data-table data-tables-by-name]
-    (parse-properties data-table data-tables-by-name []))
-  ([data-table data-tables-by-name path]
-   (loop [props-acc []
-          props-prepend-acc []
-          props-rem (:props data-table)]
-     (if (not (empty? props-rem))
-       (let [{:keys [type var-name flags] :as prop} (first props-rem)
-             prop (assoc prop :exclude (bit-and flags (bit-shift-left 1 6)))
-             props-rem (subvec props-rem 1)]
-         (cond
-           (= type 6) (let [prepend? (not (zero? (bit-and flags (bit-shift-left 1 11))))
-                            path (if (not (= var-name "baseclass"))
-                                   (conj path var-name)
-                                   path)
-                            new-props (parse-properties (get data-tables-by-name (:dt-name prop)) data-tables-by-name path)]
-                        (if prepend?
-                          (recur props-acc (into [] (concat props-prepend-acc new-props)) props-rem)
-                          (recur (into [] (concat props-acc new-props)) props-prepend-acc props-rem)))
-           (= type 5) (recur (conj props-acc (merge prop {:array-element (peek props-acc) :path path})) props-prepend-acc props-rem)
-           :else (recur (conj props-acc (assoc prop :path path)) props-prepend-acc props-rem)))
-       (into [] (concat props-prepend-acc props-acc))))))
+   (let [props-atom (atom [])
+         props (parse-properties data-table data-tables-by-name props-atom [])]
+     (into [] (concat @props-atom props))))
+  ([data-table data-tables-by-name property-holder path]
+    (loop [props-acc []
+           props-rem (:props data-table)]
+      (if (not (empty? props-rem))
+        (let [{:keys [type var-name flags] :as prop} (first props-rem)
+              prop (assoc prop :exclude (bit-and flags (bit-shift-left 1 6)))
+              props-rem (subvec props-rem 1)]
+          (cond
+            (= type 6) (let [prepend? (zero? (bit-and flags (bit-shift-left 1 11)))
+                             path (if (not (= var-name "baseclass"))
+                                    (conj path var-name)
+                                    path)]
+                         (if prepend?
+                           (do
+                             (swap! property-holder (comp (partial into []) concat) (parse-properties (get data-tables-by-name (:dt-name prop)) data-tables-by-name property-holder path))
+                             (recur props-acc props-rem))
+                           (recur (into [] (concat props-acc (parse-properties (get data-tables-by-name (:dt-name prop)) data-tables-by-name property-holder path))) props-rem)))
+            (= type 5) (recur (conj props-acc (merge prop {:array-element (peek @property-holder) :path path})) props-rem)
+            :else (recur (conj props-acc (assoc prop :path path)) props-rem)))
+        props-acc))))
+
+(deftype PropertyImpl [property] Property
+  (getPriority [this]
+    (:priority property))
+
+  (isChangesOften [this]
+    (not (zero? (bit-and (:flags property) (bit-shift-left 1 18)))))
+
+  (getProperty [this]
+    property))
+
+(defn sort-properties [properties]
+  (let [arr (into-array PropertyImpl (map ->PropertyImpl properties))]
+    (PropSorter/sortProperties arr (int-array (sort (distinct (cons 64 (map :priority properties))))))
+    (map #(.getProperty %1) arr)))
 
 (defn read-data-tables [input-stream demo-data handler-fns]
   (let [data-tables (second (read-data-tables-packets input-stream))
@@ -194,13 +209,11 @@
         (let [class-id (spec/read-short input-stream)
               name (spec/read-string input-stream 256)
               data-table-name (spec/read-string input-stream 256)
-              properties (parse-properties (get data-tables-by-name data-table-name) data-tables-by-name)]
+              properties (sort-properties (parse-properties (get data-tables-by-name data-table-name) data-tables-by-name))]
           (recur (inc classes-read) (conj classes {:class-id class-id
                                                    :name name
                                                    :data-table-name data-table-name
-                                                   :properties (sort (fn [x y]
-                                                                       (or (< (:priority x) (:priority y))
-                                                                           (zero? (bit-and (:flags y) (bit-shift-left 1 18))))) properties)})))
+                                                   :properties properties})))
         (update-in (update-in demo-data [:data-tables] (comp (partial into []) concat) data-tables) [:classes] (comp (partial into []) concat) classes)))))
 
 (defn read-string-tables [input-stream demo-data]
